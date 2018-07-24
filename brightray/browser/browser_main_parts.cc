@@ -178,14 +178,31 @@ void OverrideAppLogsPath() {
 }
 #endif
 
-int BrowserMainParts::PreEarlyInitialization() {
-  std::unique_ptr<base::FeatureList> feature_list(new base::FeatureList);
+void BrowserMainParts::InitializeFeatureList() {
+  auto* cmd_line = base::CommandLine::ForCurrentProcess();
+
+  // TODO(poiru): Link base_switches.cc and use
+  // switches::k{Enable,Disable}Features instead after
+  // https://github.com/electron/libchromiumcontent/pull/609 is merged.
+  const auto enable_features = cmd_line->GetSwitchValueASCII("enable-features");
+  auto disable_features = cmd_line->GetSwitchValueASCII("disable-features");
+
   // TODO(deepak1556): Disable guest webcontents based on OOPIF feature.
   // Disable surface synchronization and async wheel events to make OSR work.
-  feature_list->InitializeFromCommandLine(
-      "",
-      "GuestViewCrossProcessFrames,SurfaceSynchronization,AsyncWheelEvents");
+  disable_features +=
+      ",GuestViewCrossProcessFrames,SurfaceSynchronization,AsyncWheelEvents";
+
+  auto feature_list = std::make_unique<base::FeatureList>();
+  feature_list->InitializeFromCommandLine(enable_features, disable_features);
   base::FeatureList::SetInstance(std::move(feature_list));
+}
+
+bool BrowserMainParts::ShouldContentCreateFeatureList() {
+  return false;
+}
+
+int BrowserMainParts::PreEarlyInitialization() {
+  InitializeFeatureList();
   OverrideAppLogsPath();
 #if defined(USE_X11)
   views::LinuxUI::SetInstance(BuildGtkUi());
@@ -252,6 +269,17 @@ void BrowserMainParts::PreMainMessageLoopStart() {
 }
 
 void BrowserMainParts::PreMainMessageLoopRun() {
+  // We already initialized feature list in PreEarlyInitialization(), but
+  // the user JS script would not have had a chance to alter the command-line
+  // switches at that point. Lets force re-initialization here to pick up the
+  // command-line changes. Note that some Chromium code (e.g.
+  // gpu_process_host.cc) queries the feature list between
+  // PreEarlyInitialization() and here so the user script may not have
+  // control over all features. Better than nothing though!
+  base::FeatureList::ClearInstanceForTesting();
+
+  InitializeFeatureList();
+
   content::WebUIControllerFactory::RegisterFactory(
       WebUIControllerFactory::GetInstance());
 
